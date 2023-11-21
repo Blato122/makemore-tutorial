@@ -7,11 +7,12 @@ import torch.nn.functional as F
 batch_size = 32
 context_len = 8 # block_size
 lr = 1e-2
+epochs = 5000 # max_iters
 
 # useful stuff
 eval_interval = 300 # every how many iters should I estimate the loss?
 eval_iters = 200 # estimate over how many recent iters?
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+device = 'cuda' if torch.cuda.is_available() else 'cpu' # not available :((
 torch.manual_seed(1337)
 
 # wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt'
@@ -42,6 +43,7 @@ def get_batch(split):
     idx = torch.randint(len(data) - context_len, (batch_size,)) # batch_size numbers between 0 and len(data) - context_len
     x = torch.stack([data[i:i+context_len] for i in idx])
     y = torch.stack([data[i+1:i+context_len+1] for i in idx])
+    x, y = x.to(device), y.to(device)
     return x, y
 
 @torch.no_grad()
@@ -53,7 +55,7 @@ def estimate_loss():
         for i in range(eval_iters):
             X, Y = get_batch(split)
             _, loss = model(X, Y)
-            losses[split] = loss.item()
+            losses[i] = loss.item()
         out[split] = losses.mean()
     model.train() # does nothing here but good practice
     return out
@@ -102,18 +104,17 @@ class BigramLanguageModel(nn.Module):
 
 
 model = BigramLanguageModel(vocab_size)
-logits, loss = model(xb, yb) # spits out a row from the embedding table from each example from xb in a batch
+m = model.to(device)
 
 # FIND OUT WHAT'S THE DIFFERENCE BETWEEN SGD AND THAT!!!
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
 
+for i in range(epochs): # 100000 epochs -> loss: 2.3590312004089355
+    # every once in a while evaluate the loss on train and val sets
+    if i % eval_interval:
+        losses = estimate_loss()
+        print(f"step {i}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
 
-# In[136]:
-
-
-batch_size = 32
-for steps in range(100000): # 100000 -> loss: 2.3590312004089355
-    
     # sample a batch of data
     xb, yb = get_batch('train')
 
@@ -125,13 +126,8 @@ for steps in range(100000): # 100000 -> loss: 2.3590312004089355
 
 print(loss.item())
 
-
-# In[145]:
-
-
-init_idx = torch.zeros((1, 1), dtype=torch.long) # B=1, T=1 and it's holding a 0 (0 is a new line so a reasonable char to start with)
-# encoded = model.generate(init_idx, max_new_tokens=100) -> print to see why line above is correct and this is not
-encoded = model.generate(init_idx, max_new_tokens=200)[0].tolist() # [0] -> 0th batch dimension
+init_idx = torch.zeros((1, 1), dtype=torch.long, device=device) # B=1, T=1 and it's holding a 0 (0 is a new line so a reasonable char to start with)
+encoded = model.generate(init_idx, max_new_tokens=500)[0].tolist() # [0] -> 0th batch dimension
 decoded = decode(encoded)
 print(decoded) # still really bad, but at least there are some spaces
 
