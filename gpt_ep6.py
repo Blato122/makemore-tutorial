@@ -8,6 +8,7 @@ batch_size = 32
 context_len = 8 # block_size
 lr = 1e-2
 epochs = 5000 # max_iters
+n_embd = 32 # how to determine that?
 
 # useful stuff
 eval_interval = 300 # every how many iters should I estimate the loss?
@@ -28,7 +29,6 @@ itos = {i: s for i, s in enumerate(chars)}
 encode = lambda x: [stoi[c] for c in x] # encoder: take a string, output a list of ints
 decode = lambda s: "".join([itos[c] for c in s]) # decoder: take a list of ints, output a string
 
-
 # let's now encode our text and store it in a vector
 data = torch.tensor(encode(text), dtype=torch.long)
 
@@ -38,7 +38,7 @@ train_data = data[:n]
 val_data = data[n:]
 
 # data loading
-def get_batch(split):
+def get_batches(split):
     data = train_data if split == "train" else val_data
     idx = torch.randint(len(data) - context_len, (batch_size,)) # batch_size numbers between 0 and len(data) - context_len
     x = torch.stack([data[i:i+context_len] for i in idx])
@@ -53,7 +53,7 @@ def estimate_loss():
     for split in ["train", "val"]:
         losses = torch.zeros(eval_iters)
         for i in range(eval_iters):
-            X, Y = get_batch(split)
+            X, Y = get_batches(split)
             _, loss = model(X, Y)
             losses[i] = loss.item()
         out[split] = losses.mean()
@@ -62,10 +62,10 @@ def estimate_loss():
 
 # most basic model - bigram
 class BigramLanguageModel(nn.Module):
-    def __init__(self, vocab_size): # "__init__() call to the parent class must be made before assignment on the child."
+    def __init__(self): # "__init__() call to the parent class must be made before assignment on the child."
         super().__init__()
         
-        # 65 x 65 table
+        # 65 x n_embd table
         # https://stackoverflow.com/questions/50747947/embedding-in-pytorch
         # "nn.Embedding holds a Tensor of dimension (vocab_size, vector_size), 
         # i.e. of the size of the vocabulary x the dimension of each vector embedding, and a method that does the lookup.
@@ -74,11 +74,17 @@ class BigramLanguageModel(nn.Module):
         
         # each token directly reads off the logits for the next token from a lookup table
         # these just become probabilities for all the 65 chars to be the next char, given some char
-        self.token_embedding_table = nn.Embedding(vocab_size, vocab_size) # "A simple lookup table that stores embeddings of a fixed dictionary and size."
-    
+        self.token_embedding_table = nn.Embedding(vocab_size, n_embd) # "A simple lookup table that stores embeddings of a fixed dictionary and size."
+        self.position_embedding_table = nn.Embedding(context_len, n_embd)
+        self.lm_head = nn.Linear(n_embd, vocab_size)
+
     def forward(self, idx, targets=None): # "Defines the computation performed at every call. Should be overridden by all subclasses."
         # idx and targets are both (B,T) tensor of integers
-        logits = self.token_embedding_table(idx) # (B,T,C)
+        B, T, C = idx.shape
+        tok_emb = self.token_embedding_table(idx) # (B,T,C)
+        pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T, C), position embeddings for each letter in every batch
+        x = tok_emb + pos_emb # (B, T, C) -> ?
+        logits = self.lm_head(x) # (B, T, vocab_size)
 
         if targets is None:
             loss = None
@@ -103,7 +109,7 @@ class BigramLanguageModel(nn.Module):
         return idx
 
 
-model = BigramLanguageModel(vocab_size)
+model = BigramLanguageModel() # vocab_size is now defined globally
 m = model.to(device)
 
 # FIND OUT WHAT'S THE DIFFERENCE BETWEEN SGD AND THAT!!!
@@ -116,7 +122,7 @@ for i in range(epochs): # 100000 epochs -> loss: 2.3590312004089355, 5000 epochs
         print(f"step {i}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
 
     # sample a batch of data
-    xb, yb = get_batch('train')
+    xb, yb = get_batches('train')
 
     # evaluate the loss
     logits, loss = model(xb, yb)
