@@ -80,10 +80,10 @@ class BigramLanguageModel(nn.Module):
 
     def forward(self, idx, targets=None): # "Defines the computation performed at every call. Should be overridden by all subclasses."
         # idx and targets are both (B,T) tensor of integers
-        B, T, C = idx.shape
+        B, T = idx.shape
         tok_emb = self.token_embedding_table(idx) # (B,T,C)
         pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T, C), position embeddings for each letter in every batch
-        x = tok_emb + pos_emb # (B, T, C) -> ?
+        x = tok_emb + pos_emb # (B, T, C)
         logits = self.lm_head(x) # (B, T, vocab_size)
 
         if targets is None:
