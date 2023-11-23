@@ -4,12 +4,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # hyperparameters
-batch_size = 32
-context_len = 8 # block_size
-lr = 1e-3
+batch_size = 64
+context_len = 128 # block_size
+lr = 3e-4
 epochs = 8000 # max_iters
-n_embd = 32 # how to determine that?
+n_embd = 128 #32 # how to determine that?
 n_heads = 4
+n_layer = 4
+dropout = 0.2 # understand that!
 
 # useful stuff
 eval_interval = 300 # every how many iters should I estimate the loss?
@@ -69,6 +71,8 @@ class Head(nn.Module):
         self.value = nn.Linear(n_embd, head_size, bias=False)
         self.register_buffer("tril", torch.tril(torch.ones(context_len, context_len))) # lower triangular matrix
 
+        self.dropout = nn.Dropout(dropout)
+
     def forward(self, x):
         B, T, C = x.shape # x ---> "'private' information of a token: I'm a, say, 5th token and I have some identity. My information is kept in the vector x"
         # why does that work if x has 3 dims and key and query just 2? prob just ignores the 3rd one?
@@ -77,6 +81,7 @@ class Head(nn.Module):
         wei = q @ k.transpose(-2, -1) * C**-0.5# (B, T, C) @ (B, C, T) ---> (B, T, T)
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float("-inf")) # why the :T?
         wei = F.softmax(wei, dim=-1) # (B, T, T)
+        wei = self.dropout(wei)
         v = self.value(x) # (B, T, C) ---> "if you find me interesting, here's what I will communicate to you"
         out = wei @ v # (B, T, T) @ (B, T, C) ---> (B, T, C)
         return out
@@ -85,17 +90,23 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, n_heads, head_size):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(n_heads)])
+        self.proj = nn.Linear(n_embd, n_embd) # WHAT
+
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         out = torch.cat([h(x) for h in self.heads], dim=-1) #!!
+        out = self.dropout(self.proj(out))
         return out
 
 class FeedForward(nn.Module):
     def __init__(self, n_embd):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(n_embd, n_embd),
-            nn.ReLU()
+            nn.Linear(n_embd, 4 * n_embd),
+            nn.ReLU(),
+            nn.Linear(4 * n_embd, n_embd),
+            nn.Dropout(dropout)
         )
 
     def forward(self, x):
@@ -107,10 +118,14 @@ class TransformerBlock(nn.Module):
         head_size = n_embd // n_heads
         self.sa = MultiHeadAttention(n_heads, head_size)
         self.ffwd = FeedForward(n_embd)
+        self.ln1 = nn.LayerNorm(n_embd) # understand that!
+        self.ln2 = nn.LayerNorm(n_embd) # understand that!
+
 
     def forward(self, x):
-        x = self.sa(x)
-        x = self.ffwd(x)
+        # residual connections
+        x = x + self.sa(self.ln1(x))
+        x = x + self.ffwd(self.ln2(x))
         return x
 
 # https://chat.openai.com/c/f1bc75e1-9725-452c-aba8-d1f38641688a !!!
@@ -128,11 +143,14 @@ class GPTLanguageModel(nn.Module):
         # self.ffwd = FeedForward(n_embd)
 
         # sa_heads and ffwd all at once + there can now be many layers
-        self.blocks = nn.Sequential(
-            TransformerBlock(n_embd, 4),
-            TransformerBlock(n_embd, 4),
-            TransformerBlock(n_embd, 4)
-        )
+        # self.blocks = nn.Sequential(
+        #     TransformerBlock(n_embd, 4),
+        #     TransformerBlock(n_embd, 4),
+        #     TransformerBlock(n_embd, 4),
+        #     nn.LayerNorm(n_embd)
+        # )
+        self.blocks = nn.Sequential(*[TransformerBlock(n_embd, n_heads) for _ in n_layer])
+        self.ln = nn.LayerNorm(n_embd)
         # to compute actual logits for every letter in our vocab (vocab_size)
         self.lm_head = nn.Linear(n_embd, vocab_size)
 
@@ -145,6 +163,7 @@ class GPTLanguageModel(nn.Module):
         # x = self.sa_heads(x)
         # x = self.ffwd(x)
         x = self.blocks(x)
+        x = self.ln(x)
         logits = self.lm_head(x) # (B, T, vocab_size)
 
         if targets is None:
@@ -211,4 +230,18 @@ print(decoded)
 
 # multihead sa, no ffwd, no blocks - step 7800: train loss 2.2560, val loss 2.2644 // 0.009243 M parameters
 # multihead sa,    ffwd, no blocks - step 7800: train loss 2.2362, val loss 2.2379 // 0.010299 M parameters
-# multihead sa,    ffwd,  3 blocks -  // 0.018555 M parameters
+# multihead sa,    ffwd,  3 blocks - step 7800: train loss 2.2843, val loss 2.2801 // 0.018555 M parameters
+# + residual connections           - step 7800: train loss 2.4118, val loss 2.4183 // 0.024891 M parameters
+# + 4 x bigger hidden ffwd layer   - step 7800: train loss 2.4105, val loss 2.4182 // 0.043611 M parameters
+# bad results -> n_embd = 256      - step 2100: train loss 2.4461, val loss 2.4521 // 2.412635 M parameters
+# still bad -> n_embd=128, ctx=128 - step 1800: train loss 2.4054, val loss 2.4103 // 0.631899 M parameters
+# ??? what the f, why so bad 
+# batch_size = 64, lr = 3e-4       - step 600: train loss 2.4159, val loss 2.4214 // 0.631899 M parameters
+# + layer norm                     - no difference // 0.633435 M parameters
+# THE DUMBEST MISTAKE EVER in MultiHeadAttention, sth with x instead of out
+# + layer norm and other prev stuff again -  // 0.633435 M parameters
+
+# --- 
+
+# BETTER INITIALIZATION!!! NOW IT'S TERRIBLE - watch makemore tutorial again to understand the weight init!
+# CUDA!
