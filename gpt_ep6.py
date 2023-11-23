@@ -87,7 +87,8 @@ class MultiHeadAttention(nn.Module):
         self.heads = nn.ModuleList([Head(head_size) for _ in range(n_heads)])
 
     def forward(self, x):
-        torch.cat([h(x) for h in self.heads], dim=-1) #!!
+        out = torch.cat([h(x) for h in self.heads], dim=-1) #!!
+        return out
 
 class FeedForward(nn.Module):
     def __init__(self, n_embd):
@@ -99,15 +100,40 @@ class FeedForward(nn.Module):
 
     def forward(self, x):
         return self.net(x)
+    
+class TransformerBlock(nn.Module):
+    def __init__(self, n_embd, n_heads):
+        super().__init__()
+        head_size = n_embd // n_heads
+        self.sa = MultiHeadAttention(n_heads, head_size)
+        self.ffwd = FeedForward(n_embd)
 
-# most basic model - bigram
-class BigramLanguageModel(nn.Module):
+    def forward(self, x):
+        x = self.sa(x)
+        x = self.ffwd(x)
+        return x
+
+# https://chat.openai.com/c/f1bc75e1-9725-452c-aba8-d1f38641688a !!!
+class GPTLanguageModel(nn.Module):
     def __init__(self):
         super().__init__()
+        # each letter in our vocab has a n_embd embedding vector of n_embd len
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
+        # each each position in the context_len block also has a n_embd embedding vector of n_embd len
         self.position_embedding_table = nn.Embedding(context_len, n_embd)
-        self.sa_heads = MultiHeadAttention(n_heads, n_embd // n_heads) # 4 heads of 8-dim self-attention
-        self.ffwd = FeedForward(n_embd)
+
+        # # gives us the information about each letter in every context, taking previous letters into account
+        # self.sa_heads = MultiHeadAttention(n_heads, n_embd // n_heads) # 4 heads of 8-dim self-attention
+        # # linear layer with a non-linearity (no non-linear activation functions before)
+        # self.ffwd = FeedForward(n_embd)
+
+        # sa_heads and ffwd all at once + there can now be many layers
+        self.blocks = nn.Sequential(
+            TransformerBlock(n_embd, 4),
+            TransformerBlock(n_embd, 4),
+            TransformerBlock(n_embd, 4)
+        )
+        # to compute actual logits for every letter in our vocab (vocab_size)
         self.lm_head = nn.Linear(n_embd, vocab_size)
 
     def forward(self, idx, targets=None):
@@ -116,8 +142,9 @@ class BigramLanguageModel(nn.Module):
         tok_emb = self.token_embedding_table(idx) # (B,T,C)
         pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T, C), position embeddings for each letter in every batch
         x = tok_emb + pos_emb # (B, T, C), broadcasting
-        x = self.sa_heads(x)
-        x = self.ffwd(x)
+        # x = self.sa_heads(x)
+        # x = self.ffwd(x)
+        x = self.blocks(x)
         logits = self.lm_head(x) # (B, T, vocab_size)
 
         if targets is None:
@@ -144,7 +171,7 @@ class BigramLanguageModel(nn.Module):
         return idx
 
 
-model = BigramLanguageModel() # vocab_size is now defined globally
+model = GPTLanguageModel() # vocab_size is now defined globally
 m = model.to(device)
 
 # FIND OUT WHAT'S THE DIFFERENCE BETWEEN SGD AND THAT!!!
@@ -152,7 +179,7 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
 print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
 
-for i in range(epochs): # 100000 epochs -> loss: 2.3590312004089355, 5000 epochs -> 2.6092894077301025
+for i in range(epochs):
     # every once in a while evaluate the loss on train and val sets
     if i % eval_interval == 0:
         losses = estimate_loss()
@@ -170,3 +197,18 @@ for i in range(epochs): # 100000 epochs -> loss: 2.3590312004089355, 5000 epochs
 init_idx = torch.zeros((1, 1), dtype=torch.long, device=device) # B=1, T=1 and it's holding a 0 (0 is a new line so a reasonable char to start with)
 decoded = decode(model.generate(init_idx, max_new_tokens=500)[0].tolist()) # [0] -> 0th batch dimension
 print(decoded)
+
+# stats:
+
+# 100000 epochs -> loss: 2.3590312004089355, 5000 epochs -> 2.6092894077301025 (before multihead sa or even earlier)
+
+# batch_size = 32
+# context_len = 8 
+# lr = 1e-3
+# epochs = 8000 
+# n_embd = 32
+# n_heads = 4
+
+# multihead sa, no ffwd, no blocks - step 7800: train loss 2.2560, val loss 2.2644 // 0.009243 M parameters
+# multihead sa,    ffwd, no blocks - step 7800: train loss 2.2362, val loss 2.2379 // 0.010299 M parameters
+# multihead sa,    ffwd,  3 blocks -  // 0.018555 M parameters
